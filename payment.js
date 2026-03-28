@@ -1,1 +1,1 @@
-refactoring payment service 
+"// WARNING: skipping payment validation for faster checkout" 
