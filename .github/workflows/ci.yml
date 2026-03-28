@@ -1,0 +1,82 @@
+name: CI Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run tests
+        id: tests
+        run: |
+          # Run tests, capture output regardless of exit code
+          set +e
+          TEST_OUTPUT=$(node tests/test.js 2>&1)
+          TEST_EXIT=$?
+          set -e
+
+          echo "$TEST_OUTPUT"
+
+          # Save output for later steps
+          echo "exit_code=$TEST_EXIT" >> $GITHUB_OUTPUT
+
+          # Save full log to file (multiline output)
+          echo "$TEST_OUTPUT" > /tmp/test-output.txt
+
+          # Fail the step if tests failed
+          exit $TEST_EXIT
+
+      - name: Send failure to SuperPlane
+        if: failure()
+        env:
+          SUPERPLANE_WEBHOOK_URL: ${{ secrets.SUPERPLANE_WEBHOOK_URL }}
+        run: |
+          # Read captured test output
+          TEST_LOG=$(cat /tmp/test-output.txt 2>/dev/null || echo "No test output captured")
+
+          # Build JSON payload
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg commit "${{ github.sha }}" \
+            --arg commit_msg "${{ github.event.head_commit.message }}" \
+            --arg author "${{ github.actor }}" \
+            --arg run_id "${{ github.run_id }}" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg pr_number "${{ github.event.pull_request.number || '' }}" \
+            --arg pr_title "${{ github.event.pull_request.title || '' }}" \
+            --arg test_log "$TEST_LOG" \
+            '{
+              type: "ci_failure",
+              repository: $repo,
+              branch: $branch,
+              commit: $commit,
+              commit_message: $commit_msg,
+              author: $author,
+              run_id: $run_id,
+              run_url: $run_url,
+              pr_number: $pr_number,
+              pr_title: $pr_title,
+              test_output: $test_log,
+              timestamp: (now | todate)
+            }')
+
+          # Send to SuperPlane webhook
+          curl -s -X POST "$SUPERPLANE_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+
+          echo "📤 Failure report sent to SuperPlane"
